@@ -36,6 +36,12 @@ class DbResourceTest extends ResourceTestBase {
     $account = $this->drupalCreateUser($permissions);
     $this->drupalLogin($account);
 
+    // Add an entity to the workspace to test the update_seq property.
+    $entity = entity_create('entity_test_rev');
+    $entity->save();
+    $entity->name = $this->randomMachineName();
+    $entity->save();
+
     $response = $this->httpRequest($this->workspace->id(), 'GET', NULL);
     $this->assertResponse('200', 'HTTP response code is correct.');
     $this->assertHeader('content-type', $this->defaultMimeType);
@@ -43,6 +49,7 @@ class DbResourceTest extends ResourceTestBase {
     // Only assert one example property here, other properties should be
     // checked in serialization tests.
     $this->assertEqual($data['db_name'], $this->workspace->id(), 'GET request returned correct db_name.');
+    $this->assertEqual($data['update_seq'], $entity->_local_seq->value, 'GET request returned correct update_seq.');
   }
 
   public function testPut() {
@@ -91,7 +98,7 @@ class DbResourceTest extends ResourceTestBase {
       $data = Json::decode($response);
       $this->assertTrue(isset($data['rev']), 'POST request returned a revision hash.');
 
-      $response = $this->httpRequest($this->workspace->id(), 'POST', $serialized);
+      $this->httpRequest($this->workspace->id(), 'POST', $serialized);
       $this->assertResponse('409', 'HTTP response code is correct when posting conflicting entity');
     }
   }
@@ -117,5 +124,4 @@ class DbResourceTest extends ResourceTestBase {
     $entity = entity_load('workspace', $entity->id());
     $this->assertTrue(empty($entity), 'The entity being DELETED was not loaded.');
   }
-
 }

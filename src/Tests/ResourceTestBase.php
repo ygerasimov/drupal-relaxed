@@ -73,91 +73,127 @@ abstract class ResourceTestBase extends RESTTestBase {
    *   has been committed. However, the prepending of self::apiRoot needs to be
    *   kept.
    */
-  protected function httpRequest($url, $method, $body = NULL, $mime_type = NULL) {
+  protected function httpRequest($url, $method, $body = NULL, $mime_type = NULL, $headers = NULL, $query = NULL) {
     // Keep in overridden method when removing the bulk of this method.
     $url = $this->apiRoot . '/' . $url;
 
-    if (!isset($mime_type)) {
+    if ($mime_type === NULL) {
       $mime_type = $this->defaultMimeType;
     }
     if (!in_array($method, array('GET', 'HEAD', 'OPTIONS', 'TRACE'))) {
       // GET the CSRF token first for writing requests.
       $token = $this->drupalGet('rest/session/token');
     }
+    $additional_headers = array();
+    if (is_array($headers)) {
+      foreach ($headers as $name => $value) {
+        $name = mb_convert_case($name, MB_CASE_TITLE);
+        $additional_headers[] = "$name: $value";
+      }
+    }
+    // Set query if there are additional parameters.
+    $options = isset($query) ? array('absolute' => TRUE, 'query' => $query) : array('absolute' => TRUE);
     $curl_options = array();
     switch ($method) {
       case 'GET':
-        // Set query if there are additional GET parameters.
-        $options = isset($body) ? array('absolute' => TRUE, 'query' => $body) : array('absolute' => TRUE);
+        $get_headers = array_merge(
+          array(
+            'Accept: ' . $mime_type,
+          ),
+          $additional_headers
+        );
         $curl_options = array(
           CURLOPT_HTTPGET => TRUE,
           CURLOPT_CUSTOMREQUEST => 'GET',
-          CURLOPT_URL => url($url, $options),
+          CURLOPT_URL => _url($url, $options),
           CURLOPT_NOBODY => FALSE,
-          CURLOPT_HTTPHEADER => array('Accept: ' . $mime_type),
+          CURLOPT_HTTPHEADER => $get_headers,
         );
         break;
 
-        case 'HEAD':
-          $options = isset($body) ? array('absolute' => TRUE, 'query' => $body) : array('absolute' => TRUE);
-          $curl_options = array(
-            CURLOPT_HTTPGET => FALSE,
-            CURLOPT_CUSTOMREQUEST => 'HEAD',
-            CURLOPT_URL => url($url, $options),
-            CURLOPT_NOBODY => TRUE,
-            CURLOPT_HTTPHEADER => array('Accept: ' . $mime_type),
-          );
-          break;
+      case 'HEAD':
+        $head_headers = array_merge(
+          array(
+            'Accept: ' . $mime_type,
+          ),
+          $additional_headers
+        );
+        $curl_options = array(
+          CURLOPT_HTTPGET => FALSE,
+          CURLOPT_CUSTOMREQUEST => 'HEAD',
+          CURLOPT_URL => _url($url, $options),
+          CURLOPT_NOBODY => TRUE,
+          CURLOPT_HTTPHEADER => $head_headers,
+        );
+        break;
 
       case 'POST':
+        $post_headers = array_merge(
+          array(
+            'Content-Type: ' . $mime_type,
+            'X-CSRF-Token: ' . $token,
+          ),
+          $additional_headers
+        );
         $curl_options = array(
           CURLOPT_HTTPGET => FALSE,
           CURLOPT_POST => TRUE,
           CURLOPT_POSTFIELDS => $body,
-          CURLOPT_URL => url($url, array('absolute' => TRUE)),
+          CURLOPT_URL => _url($url, array('absolute' => TRUE)),
           CURLOPT_NOBODY => FALSE,
-          CURLOPT_HTTPHEADER => array(
-            'Content-Type: ' . $mime_type,
-            'X-CSRF-Token: ' . $token,
-          ),
+          CURLOPT_HTTPHEADER => $post_headers,
         );
         break;
 
       case 'PUT':
+        $put_headers = array_merge(
+          array(
+            'Content-Type: ' . $mime_type,
+            'X-CSRF-Token: ' . $token,
+          ),
+          $additional_headers
+        );
         $curl_options = array(
           CURLOPT_HTTPGET => FALSE,
           CURLOPT_CUSTOMREQUEST => 'PUT',
           CURLOPT_POSTFIELDS => $body,
-          CURLOPT_URL => url($url, array('absolute' => TRUE)),
+          CURLOPT_URL => _url($url, $options),
           CURLOPT_NOBODY => FALSE,
-          CURLOPT_HTTPHEADER => array(
-            'Content-Type: ' . $mime_type,
-            'X-CSRF-Token: ' . $token,
-          ),
+          CURLOPT_HTTPHEADER => $put_headers,
         );
         break;
 
       case 'PATCH':
+        $patch_headers = array_merge(
+          array(
+            'Content-Type: ' . $mime_type,
+            'X-CSRF-Token: ' . $token,
+          ),
+          $additional_headers
+        );
         $curl_options = array(
           CURLOPT_HTTPGET => FALSE,
           CURLOPT_CUSTOMREQUEST => 'PATCH',
           CURLOPT_POSTFIELDS => $body,
-          CURLOPT_URL => url($url, array('absolute' => TRUE)),
+          CURLOPT_URL => _url($url, array('absolute' => TRUE)),
           CURLOPT_NOBODY => FALSE,
-          CURLOPT_HTTPHEADER => array(
-            'Content-Type: ' . $mime_type,
-            'X-CSRF-Token: ' . $token,
-          ),
+          CURLOPT_HTTPHEADER => $patch_headers,
         );
         break;
 
       case 'DELETE':
+        $delete_headers = array_merge(
+          array(
+            'X-CSRF-Token: ' . $token,
+          ),
+          $additional_headers
+        );
         $curl_options = array(
           CURLOPT_HTTPGET => FALSE,
           CURLOPT_CUSTOMREQUEST => 'DELETE',
-          CURLOPT_URL => url($url, array('absolute' => TRUE)),
+          CURLOPT_URL => _url($url, $options),
           CURLOPT_NOBODY => FALSE,
-          CURLOPT_HTTPHEADER => array('X-CSRF-Token: ' . $token),
+          CURLOPT_HTTPHEADER => $delete_headers,
         );
         break;
     }
@@ -182,5 +218,16 @@ abstract class ResourceTestBase extends RESTTestBase {
       'id' => $name,
     ));
     return $entity;
+  }
+
+  protected function assertHeader($header, $value, $message = '', $group = 'Browser') {
+    $header = strtolower($header);
+    $header_value = $this->drupalGetHeader($header);
+    // Strip attributes such as 'charset' from the content-type header for
+    // easier comparison.
+    if ($header == 'content-type') {
+      list($header_value) = explode(';', $header_value);
+    }
+    return $this->assertTrue($header_value == $value, $message ? $message : 'HTTP response header ' . $header . ' with value ' . $value . ' found.', $group);
   }
 }

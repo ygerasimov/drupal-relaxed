@@ -7,6 +7,7 @@ use Drupal\Core\Entity\EntityStorageException;
 use Drupal\rest\ResourceResponse;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
@@ -29,58 +30,68 @@ class DocResource extends ResourceBase {
 
   /**
    * @param string | \Drupal\Core\Config\Entity\ConfigEntityInterface $workspace
-   * @param string | \Drupal\Core\Entity\ContentEntityInterface[] $entities
+   * @param mixed $existing
    *
    * @return \Drupal\rest\ResourceResponse
    */
-  public function head($workspace, $entities) {
-    if (empty($entities) || is_string($entities)) {
+  public function head($workspace, $existing) {
+    if (is_string($workspace) || is_string($existing)) {
       throw new NotFoundHttpException();
     }
-    // We know there can only be one entity with DELETE requests.
-    $entity = reset($entities);
+    /** @var \Drupal\Core\Entity\ContentEntityInterface[] $revisions */
+    $revisions = is_array($existing) ? $existing : array($existing);
+
+    foreach ($revisions as $revision) {
+      if (!$revision->access('view')) {
+        throw new AccessDeniedHttpException();
+      }
+    }
 
     // @todo Create a event handler and override the ETag that's set by core.
     // @see \Drupal\Core\EventSubscriber\FinishResponseSubscriber
-    return new ResourceResponse(NULL, 200, array('X-Relaxed-ETag' => $entity->_revs_info->rev));
+    return new ResourceResponse(NULL, 200, array('X-Relaxed-ETag' => $revisions[0]->_revs_info->rev));
   }
 
   /**
    * @param string | \Drupal\Core\Config\Entity\ConfigEntityInterface $workspace
-   * @param string | \Drupal\Core\Entity\ContentEntityInterface[] $entities
+   * @param mixed $existing
    *
    * @return \Drupal\rest\ResourceResponse
    */
-  public function get($workspace, $entities) {
-    if (empty($entities) || is_string($entities)) {
+  public function get($workspace, $existing) {
+    if (is_string($workspace) || is_string($existing)) {
       throw new NotFoundHttpException();
     }
-    foreach ($entities as $entity) {
-      if (!$entity->access('view')) {
+    /** @var \Drupal\Core\Entity\ContentEntityInterface[] $revisions */
+    $revisions = is_array($existing) ? $existing : array($existing);
+
+    foreach ($revisions as $revision) {
+      if (!$revision->access('view')) {
         throw new AccessDeniedHttpException();
       }
-      foreach ($entity as $field_name => $field) {
+      foreach ($revision as $field_name => $field) {
         if (!$field->access('view')) {
-          unset($entity->{$field_name});
+          unset($revision->{$field_name});
         }
       }
     }
-    // Decide if to return a single entity or multiple revisions.
-    $data = \Drupal::request()->query->get('open_revs') ? $entities : reset($entities);
+    // Decide if to return a single or multiple revisions.
+    $data = is_array($existing) ? $revisions : reset($revisions);
     // @todo Create a event handler and override the ETag that's set by core.
     // @see \Drupal\Core\EventSubscriber\FinishResponseSubscriber
-    return new ResourceResponse($data, 200, array('X-Relaxed-ETag' => $entity->_revs_info->rev));
+    return new ResourceResponse($data, 200, array('X-Relaxed-ETag' => $revisions[0]->_revs_info->rev));
   }
 
   /**
+   * @param string | \Drupal\multiversion\Entity\WorkspaceInterface $workspace
    * @param string | \Drupal\Core\Entity\ContentEntityInterface $existing_entity
    * @param \Drupal\Core\Entity\ContentEntityInterface $received_entity
    *
    * @return \Drupal\rest\ResourceResponse
    */
-  public function put($workspace, $existing_entity, ContentEntityInterface $received_entity = NULL) {
-    if (!$received_entity instanceof ContentEntityInterface) {
-      throw new BadRequestHttpException(t('No content received'));
+  public function put($workspace, $existing_entity, ContentEntityInterface $received_entity) {
+    if (is_string($workspace)) {
+      throw new NotFoundHttpException();
     }
 
     // Check entity and field level access.
@@ -93,12 +104,20 @@ class DocResource extends ResourceBase {
       }
     }
 
+    // @todo Ensure that $received_entity is being saved with the UUID from $existing_entity
+
     // Validate the received data before saving.
     $this->validate($received_entity);
+
+    if (!is_string($existing_entity) && $received_entity->_revs_info->rev != $existing_entity->_revs_info->rev) {
+      throw new ConflictHttpException();
+    }
+
     try {
       $received_entity->save();
       $rev = $received_entity->_revs_info->rev;
-      return new ResourceResponse(array('ok' => TRUE, 'id' => $received_entity->uuid(), 'rev' => $rev), 201, array('ETag' => $rev));
+      $data = array('ok' => TRUE, 'id' => $received_entity->uuid(), 'rev' => $rev);
+      return new ResourceResponse($data, 201, array('X-Relaxed-ETag' => $rev));
     }
     catch (EntityStorageException $e) {
       throw new HttpException(500, NULL, $e);
@@ -106,24 +125,33 @@ class DocResource extends ResourceBase {
   }
 
   /**
-   * @param \Drupal\Core\Entity\ContentEntityInterface[] $entities
+   * @param string | \Drupal\multiversion\Entity\WorkspaceInterface $workspace
+   * @param string | \Drupal\Core\Entity\ContentEntityInterface $entity
    *
    * @return \Drupal\rest\ResourceResponse
    */
-  public function delete($workspace, $entities) {
-    if (empty($entities) || is_string($entities)) {
+  public function delete($workspace, $entity) {
+    if (is_string($workspace) || is_string($entity)) {
       throw new NotFoundHttpException();
     }
-    // We know there can only be one entity with DELETE requests.
-    $entity = reset($entities);
+
+    if (!$entity->access('delete')) {
+      throw new AccessDeniedHttpException();
+    }
+
+    $record = \Drupal::service('entity.uuid_index')->get($entity->uuid());
+    $last_rev = $record['rev'];
+    if ($last_rev != $entity->_revs_info->rev) {
+      throw new ConflictHttpException();
+    }
 
     try {
-      // @todo: Access check.
       $entity->delete();
     }
     catch (\Exception $e) {
       throw new HttpException(500, NULL, $e);
     }
+
     return new ResourceResponse(array('ok' => TRUE), 200);
   }
 }
